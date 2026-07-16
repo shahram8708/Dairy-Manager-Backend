@@ -17,5 +17,5 @@ class Config:
     JWT_HEADER_TYPE = 'Bearer'
     SEED_ADMIN_USERNAME = os.environ.get('SEED_ADMIN_USERNAME')
     SEED_ADMIN_PASSWORD = os.environ.get('SEED_ADMIN_PASSWORD')
-    CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'http://127.0.0.1:3000,http://127.0.0.1:3000').split(',')
+    CORS_ORIGINS = [origin.strip() for origin in os.environ.get('CORS_ORIGINS', '').split(',') if origin.strip()]
     DEBUG = os.environ.get('DEBUG', 'False').lower() in ('true', '1', 'yes')
