@@ -88,7 +88,9 @@ def login():
             additional_claims={
                 'role': user.role,
                 'username': user.username,
-                'full_name': user.full_name or user.username
+                'full_name': user.full_name or user.username,
+                'agency_id': user.agency_id,
+                'agency_name': user.agency.name if user.agency else None
             }
         )
         refresh_token = create_refresh_token(identity=str(user.id))

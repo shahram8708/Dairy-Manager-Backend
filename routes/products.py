@@ -4,7 +4,7 @@ from decimal import Decimal
 from models import db
 from models.product import Product
 from models.product_price import ProductPrice
-from utils.auth import admin_required, login_required_any, get_current_user
+from utils.auth import admin_required, get_current_user
 from utils.audit import log_audit
 from utils.validators import validate_required, sanitize_string
 
@@ -12,7 +12,7 @@ products_bp = Blueprint('products', __name__)
 
 
 @products_bp.route('', methods=['GET'])
-@login_required_any
+@admin_required
 def list_products():
     try:
         query = Product.query.order_by(Product.display_order, Product.name)
@@ -26,7 +26,7 @@ def list_products():
 
 
 @products_bp.route('/<int:product_id>', methods=['GET'])
-@login_required_any
+@admin_required
 def get_product(product_id):
     try:
         product = Product.query.get(product_id)
@@ -177,7 +177,7 @@ def set_price(product_id):
 
 
 @products_bp.route('/<int:product_id>/prices', methods=['GET'])
-@login_required_any
+@admin_required
 def list_prices(product_id):
     try:
         product = Product.query.get(product_id)

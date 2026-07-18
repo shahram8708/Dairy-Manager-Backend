@@ -37,6 +37,9 @@ def get_payments():
     Supports filtering by dealer, agency, date range, mode, and collector.
     """
     try:
+        current_user = get_current_user()
+        if current_user.role == 'delivery':
+            return jsonify({'error': 'Access denied'}), 403
         # ------ Pagination params ------
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 25, type=int)
@@ -58,8 +61,7 @@ def get_payments():
         if dealer_id:
             query = query.filter(Payment.dealer_id == dealer_id)
 
-        if agency_id:
-            # Join with Dealer to filter by agency
+        if agency_id and current_user.role == 'admin':
             query = query.join(Dealer, Payment.dealer_id == Dealer.id).filter(
                 Dealer.agency_id == agency_id
             )
@@ -119,6 +121,12 @@ def create_payment():
         if not data:
             return jsonify({'error': 'Request body is required'}), 400
 
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({'error': 'Unauthorized'}), 401
+        if current_user.role not in ('admin', 'collector'):
+            return jsonify({'error': 'Access denied'}), 403
+
         # ------ Validate required fields ------
         dealer_id = data.get('dealer_id')
         amount_raw = data.get('amount')
@@ -154,6 +162,8 @@ def create_payment():
             return jsonify({'error': 'Dealer not found'}), 404
         if not dealer.is_active:
             return jsonify({'error': 'Dealer is not active'}), 400
+        if current_user.role == 'delivery' and dealer.agency_id != current_user.agency_id:
+            return jsonify({'error': 'Access denied'}), 403
 
         # Parse payment date (default to now)
         if payment_date_str:
@@ -235,13 +245,17 @@ def create_payment():
 # PUT /<id>  –  Update an existing payment (admin only)
 # ---------------------------------------------------------------------------
 @payments_bp.route('/<int:payment_id>', methods=['PUT'])
-@admin_required
+@login_required_any
 def update_payment(payment_id):
     """
     Update an existing payment. Admin only.
     Only amount, payment_mode, and remark can be modified.
     """
     try:
+        current_user = get_current_user()
+        if not current_user or current_user.role not in ('admin', 'collector'):
+            return jsonify({'error': 'Access denied'}), 403
+
         # ------ Find payment (not deleted) ------
         payment = Payment.query.filter_by(
             id=payment_id,
@@ -329,6 +343,7 @@ def update_payment(payment_id):
 def delete_payment(payment_id):
     """Soft-delete a payment by setting is_deleted=True. Admin only."""
     try:
+        current_user = get_current_user()
         payment = Payment.query.get(payment_id)
         if not payment:
             return jsonify({'error': 'Payment not found'}), 404

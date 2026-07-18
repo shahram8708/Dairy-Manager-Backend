@@ -14,7 +14,11 @@ agencies_bp = Blueprint('agencies', __name__)
 def list_agencies():
     """List all agencies with optional is_active filter."""
     try:
+        current_user = get_current_user()
         query = Agency.query
+
+        if current_user.role == 'delivery':
+            query = query.filter_by(id=current_user.agency_id)
 
         is_active = request.args.get('is_active')
         if is_active is not None:
@@ -32,9 +36,12 @@ def list_agencies():
 def get_agency(id):
     """Get a single agency by ID."""
     try:
+        current_user = get_current_user()
         agency = Agency.query.get(id)
         if not agency:
             return jsonify({'error': 'Agency not found'}), 404
+        if current_user.role == 'delivery' and agency.id != current_user.agency_id:
+            return jsonify({'error': 'Access denied'}), 403
         return jsonify({'agency': agency.to_dict()}), 200
     except Exception as e:
         return jsonify({'error': 'Failed to fetch agency', 'detail': str(e)}), 500

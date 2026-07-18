@@ -16,7 +16,7 @@ from models.dealer import Dealer
 from models.product import Product
 from models.delivery import DeliveryEntry, DeliveryLineItem
 from models.payment import Payment
-from utils.auth import login_required_any
+from utils.auth import admin_required, login_required_any, get_current_user
 from utils.export import generate_pdf, generate_excel
 
 reports_bp = Blueprint('reports', __name__)
@@ -46,10 +46,11 @@ def _parse_date(date_str, param_name='date'):
 # GET /dashboard  –  Dashboard statistics
 # ===========================================================================
 @reports_bp.route('/dashboard', methods=['GET'])
-@login_required_any
+@admin_required
 def get_dashboard():
     """Return comprehensive dashboard statistics."""
     try:
+        current_user = get_current_user()
         today = date.today()
         month_start = today.replace(day=1)
 
@@ -71,7 +72,7 @@ def get_dashboard():
         today_billed = _safe_decimal(today_billed)
 
         # ------ Today's collected amount ------
-        today_collected = db.session.query(
+        today_collected_query = db.session.query(
             func.sum(Payment.amount)
         ).filter(
             and_(
@@ -79,7 +80,12 @@ def get_dashboard():
                 Payment.payment_date < today_end_dt,
                 Payment.is_deleted == False  # noqa: E712
             )
-        ).scalar()
+        )
+        if current_user.role != 'admin':
+            today_collected_query = today_collected_query.join(Dealer, Payment.dealer_id == Dealer.id).filter(
+                Dealer.agency_id == current_user.agency_id
+            )
+        today_collected = today_collected_query.scalar()
         today_collected = _safe_decimal(today_collected)
 
         today_pending = today_billed - today_collected
@@ -99,7 +105,7 @@ def get_dashboard():
         month_billed = _safe_decimal(month_billed)
 
         # ------ Month collected ------
-        month_collected = db.session.query(
+        month_collected_query = db.session.query(
             func.sum(Payment.amount)
         ).filter(
             and_(
@@ -107,21 +113,33 @@ def get_dashboard():
                 Payment.payment_date < today_end_dt,
                 Payment.is_deleted == False  # noqa: E712
             )
-        ).scalar()
+        )
+        if current_user.role != 'admin':
+            month_collected_query = month_collected_query.join(Dealer, Payment.dealer_id == Dealer.id).filter(
+                Dealer.agency_id == current_user.agency_id
+            )
+        month_collected = month_collected_query.scalar()
         month_collected = _safe_decimal(month_collected)
 
         month_pending = month_billed - month_collected
 
         # ------ Total outstanding (sum of all active dealer balances) ------
-        total_outstanding = db.session.query(
+        total_outstanding_query = db.session.query(
             func.sum(Dealer.pending_balance)
         ).filter(
             Dealer.is_active == True  # noqa: E712
-        ).scalar()
-        total_outstanding = _safe_decimal(total_outstanding)
+        )
+        if current_user.role != 'admin':
+            total_outstanding_query = total_outstanding_query.filter(
+                Dealer.agency_id == current_user.agency_id
+            )
+        total_outstanding = _safe_decimal(total_outstanding_query.scalar())
 
         # ------ Per-agency breakdown ------
-        agencies = Agency.query.filter_by(is_active=True).all()
+        agency_query = Agency.query.filter_by(is_active=True)
+        if current_user.role != 'admin':
+            agency_query = agency_query.filter_by(id=current_user.agency_id)
+        agencies = agency_query.all()
         per_agency = []
 
         for agency in agencies:
@@ -220,13 +238,14 @@ def get_dashboard():
 # GET /daily-sheet  –  Paper ledger reproduction
 # ===========================================================================
 @reports_bp.route('/daily-sheet', methods=['GET'])
-@login_required_any
+@admin_required
 def get_daily_sheet():
     """
     Reproduce the exact paper ledger grid for an agency on a given date.
     Includes ALL active dealers even if they have no deliveries that day.
     """
     try:
+        current_user = get_current_user()
         agency_id = request.args.get('agency_id', type=int)
         date_str = request.args.get('date')
 
@@ -242,6 +261,8 @@ def get_daily_sheet():
         agency = Agency.query.get(agency_id)
         if not agency:
             return jsonify({'error': 'Agency not found'}), 404
+        if current_user.role != 'admin' and agency.id != current_user.agency_id:
+            return jsonify({'error': 'Access denied'}), 403
 
         # All active dealers for this agency
         dealers = (
@@ -364,13 +385,14 @@ def get_daily_sheet():
 # GET /dealer-statement  –  Chronological ledger statement
 # ===========================================================================
 @reports_bp.route('/dealer-statement', methods=['GET'])
-@login_required_any
+@admin_required
 def get_dealer_statement():
     """
     Return a chronological statement for a dealer with running balance.
     Merges deliveries and payments, sorted by date.
     """
     try:
+        current_user = get_current_user()
         dealer_id = request.args.get('dealer_id', type=int)
         if not dealer_id:
             return jsonify({'error': 'dealer_id is required'}), 400
@@ -378,6 +400,8 @@ def get_dealer_statement():
         dealer = Dealer.query.get(dealer_id)
         if not dealer:
             return jsonify({'error': 'Dealer not found'}), 404
+        if current_user.role != 'admin' and dealer.agency_id != current_user.agency_id:
+            return jsonify({'error': 'Access denied'}), 403
 
         # Date range
         try:
@@ -498,10 +522,11 @@ def get_dealer_statement():
 # GET /outstanding  –  Dealers with pending balances
 # ===========================================================================
 @reports_bp.route('/outstanding', methods=['GET'])
-@login_required_any
+@admin_required
 def get_outstanding():
     """Return all dealers with positive pending balance, sorted descending."""
     try:
+        current_user = get_current_user()
         agency_id = request.args.get('agency_id', type=int)
         min_amount_str = request.args.get('min_amount')
 
@@ -519,7 +544,9 @@ def get_outstanding():
             )
         )
 
-        if agency_id:
+        if current_user.role != 'admin':
+            query = query.filter(Dealer.agency_id == current_user.agency_id)
+        elif agency_id:
             query = query.filter(Dealer.agency_id == agency_id)
 
         query = query.order_by(Dealer.pending_balance.desc())
@@ -563,12 +590,13 @@ def get_outstanding():
 # GET /product-sales  –  Product sales analytics
 # ===========================================================================
 @reports_bp.route('/product-sales', methods=['GET'])
-@login_required_any
+@admin_required
 def get_product_sales():
     """
     Sum total quantity and revenue for each active product in a date range.
     """
     try:
+        current_user = get_current_user()
         from_date_str = request.args.get('from_date')
         to_date_str = request.args.get('to_date')
 
@@ -589,7 +617,7 @@ def get_product_sales():
         product_list = []
         for product in products:
             # Sum quantity and revenue for this product in the date range
-            result = db.session.query(
+            result_query = db.session.query(
                 func.sum(DeliveryLineItem.quantity).label('total_qty'),
                 func.sum(DeliveryLineItem.line_amount).label('total_revenue')
             ).join(
@@ -601,7 +629,12 @@ def get_product_sales():
                     DeliveryEntry.delivery_date >= from_date,
                     DeliveryEntry.delivery_date <= to_date
                 )
-            ).first()
+            )
+            if current_user.role != 'admin':
+                result_query = result_query.join(Dealer, DeliveryLineItem.dealer_id == Dealer.id).filter(
+                    Dealer.agency_id == current_user.agency_id
+                )
+            result = result_query.first()
 
             total_qty = _safe_decimal(result.total_qty if result else None)
             total_revenue = _safe_decimal(result.total_revenue if result else None)
@@ -634,12 +667,17 @@ def get_product_sales():
 # GET /payment-collection  –  Payment collection summary
 # ===========================================================================
 @reports_bp.route('/payment-collection', methods=['GET'])
-@login_required_any
+@admin_required
 def get_payment_collection():
     """Return filtered payment list with summary breakdown by mode."""
     try:
+        current_user = get_current_user()
         # Build query
         query = Payment.query.filter(Payment.is_deleted == False)  # noqa: E712
+        if current_user.role != 'admin':
+            query = query.join(Dealer, Payment.dealer_id == Dealer.id).filter(
+                Dealer.agency_id == current_user.agency_id
+            )
 
         from_date_str = request.args.get('from_date')
         to_date_str = request.args.get('to_date')
@@ -662,7 +700,7 @@ def get_payment_collection():
             except ValueError:
                 return jsonify({'error': 'Invalid to_date format. Use YYYY-MM-DD'}), 400
 
-        if agency_id:
+        if agency_id and current_user.role == 'admin':
             query = query.join(Dealer, Payment.dealer_id == Dealer.id).filter(
                 Dealer.agency_id == agency_id
             )
@@ -704,7 +742,7 @@ def get_payment_collection():
 # GET /export/<report_type>  –  Export reports as PDF or Excel
 # ===========================================================================
 @reports_bp.route('/export/<report_type>', methods=['GET'])
-@login_required_any
+@admin_required
 def export_report(report_type):
     """
     Export any report as PDF or Excel.
@@ -764,8 +802,12 @@ def export_report(report_type):
 
 def _build_daily_sheet_export(args):
     """Build export data for the daily sheet report."""
+    current_user = get_current_user()
     agency_id = args.get('agency_id', type=int)
     date_str = args.get('date')
+
+    if current_user.role != 'admin':
+        agency_id = current_user.agency_id
 
     if not agency_id or not date_str:
         raise ValueError('agency_id and date are required')
@@ -774,6 +816,8 @@ def _build_daily_sheet_export(args):
     agency = Agency.query.get(agency_id)
     if not agency:
         raise ValueError('Agency not found')
+    if current_user.role != 'admin' and agency.id != current_user.agency_id:
+        raise ValueError('Access denied')
 
     dealers = (
         Dealer.query
@@ -850,6 +894,7 @@ def _build_daily_sheet_export(args):
 
 def _build_dealer_statement_export(args):
     """Build export data for the dealer statement report."""
+    current_user = get_current_user()
     dealer_id = args.get('dealer_id', type=int)
     if not dealer_id:
         raise ValueError('dealer_id is required')
@@ -857,6 +902,8 @@ def _build_dealer_statement_export(args):
     dealer = Dealer.query.get(dealer_id)
     if not dealer:
         raise ValueError('Dealer not found')
+    if current_user.role != 'admin' and dealer.agency_id != current_user.agency_id:
+        raise ValueError('Access denied')
 
     from_date = _parse_date(args.get('from_date'), 'from_date')
     to_date = _parse_date(args.get('to_date'), 'to_date')
@@ -951,6 +998,7 @@ def _build_dealer_statement_export(args):
 
 def _build_outstanding_export(args):
     """Build export data for the outstanding report."""
+    current_user = get_current_user()
     agency_id = args.get('agency_id', type=int)
     min_amount_str = args.get('min_amount')
 
@@ -964,7 +1012,9 @@ def _build_outstanding_export(args):
             Dealer.pending_balance > min_amount
         )
     )
-    if agency_id:
+    if current_user.role != 'admin':
+        query = query.filter(Dealer.agency_id == current_user.agency_id)
+    elif agency_id:
         query = query.filter(Dealer.agency_id == agency_id)
 
     dealers = query.order_by(Dealer.pending_balance.desc()).all()
@@ -991,6 +1041,7 @@ def _build_outstanding_export(args):
 
 def _build_product_sales_export(args):
     """Build export data for the product sales report."""
+    current_user = get_current_user()
     from_date_str = args.get('from_date')
     to_date_str = args.get('to_date')
 
@@ -1007,7 +1058,7 @@ def _build_product_sales_export(args):
 
     rows = []
     for product in products:
-        result = db.session.query(
+        result_query = db.session.query(
             func.sum(DeliveryLineItem.quantity).label('total_qty'),
             func.sum(DeliveryLineItem.line_amount).label('total_revenue')
         ).join(
@@ -1019,7 +1070,12 @@ def _build_product_sales_export(args):
                 DeliveryEntry.delivery_date >= from_date,
                 DeliveryEntry.delivery_date <= to_date
             )
-        ).first()
+        )
+        if current_user.role != 'admin':
+            result_query = result_query.join(Dealer, DeliveryLineItem.dealer_id == Dealer.id).filter(
+                Dealer.agency_id == current_user.agency_id
+            )
+        result = result_query.first()
 
         total_qty = _safe_decimal(result.total_qty if result else None)
         total_revenue = _safe_decimal(result.total_revenue if result else None)
@@ -1035,7 +1091,12 @@ def _build_product_sales_export(args):
 
 def _build_payment_collection_export(args):
     """Build export data for the payment collection report."""
+    current_user = get_current_user()
     query = Payment.query.filter(Payment.is_deleted == False)  # noqa: E712
+    if current_user.role != 'admin':
+        query = query.join(Dealer, Payment.dealer_id == Dealer.id).filter(
+            Dealer.agency_id == current_user.agency_id
+        )
 
     from_date_str = args.get('from_date')
     to_date_str = args.get('to_date')
@@ -1049,7 +1110,7 @@ def _build_payment_collection_export(args):
     if to_date_str:
         to_date = datetime.strptime(to_date_str, '%Y-%m-%d')
         query = query.filter(Payment.payment_date < to_date + timedelta(days=1))
-    if agency_id:
+    if agency_id and current_user.role == 'admin':
         query = query.join(Dealer, Payment.dealer_id == Dealer.id).filter(
             Dealer.agency_id == agency_id
         )

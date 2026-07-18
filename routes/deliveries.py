@@ -24,7 +24,7 @@ deliveries_bp = Blueprint('deliveries', __name__)
 # GET /  –  Delivery grid for a given agency + date
 # ---------------------------------------------------------------------------
 @deliveries_bp.route('/', methods=['GET'])
-@login_required_any
+@admin_required
 def get_delivery_grid():
     """
     Return the delivery grid for a specific agency and date.

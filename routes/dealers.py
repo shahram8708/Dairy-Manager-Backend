@@ -24,10 +24,13 @@ def list_dealers():
         per_page = request.args.get('per_page', 20, type=int)
         per_page = min(per_page, 100)
 
+        current_user = get_current_user()
         query = Dealer.query
+        if current_user.role == 'delivery':
+            query = query.filter_by(agency_id=current_user.agency_id)
 
         agency_id = request.args.get('agency_id', type=int)
-        if agency_id:
+        if agency_id and current_user.role == 'admin':
             query = query.filter_by(agency_id=agency_id)
 
         route_area = request.args.get('route_area')
@@ -69,9 +72,14 @@ def _parse_date(date_str, param_name='date'):
 @login_required_any
 def get_dealer_deliveries(dealer_id):
     try:
+        current_user = get_current_user()
+        if current_user.role == 'collector':
+            return jsonify({'error': 'Access denied'}), 403
         dealer = Dealer.query.get(dealer_id)
         if not dealer:
             return jsonify({'error': 'Dealer not found'}), 404
+        if current_user.role == 'delivery' and dealer.agency_id != current_user.agency_id:
+            return jsonify({'error': 'Access denied'}), 403
 
         from_date = _parse_date(request.args.get('from_date'), 'from_date')
         to_date = _parse_date(request.args.get('to_date'), 'to_date')
@@ -163,9 +171,12 @@ def get_dealer_deliveries(dealer_id):
 @login_required_any
 def get_dealer(dealer_id):
     try:
+        current_user = get_current_user()
         dealer = Dealer.query.get(dealer_id)
         if not dealer:
             return jsonify({'error': 'Dealer not found'}), 404
+        if current_user.role == 'delivery' and dealer.agency_id != current_user.agency_id:
+            return jsonify({'error': 'Access denied'}), 403
         return jsonify({'dealer': dealer.to_dict()})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

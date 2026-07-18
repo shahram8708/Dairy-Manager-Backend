@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from datetime import datetime
 from models import db
 from models.user import User
+from models.agency import Agency
 from utils.auth import admin_required, get_current_user
 from utils.audit import log_audit
 from utils.validators import validate_required, sanitize_string
@@ -29,8 +30,8 @@ def create_user():
             return jsonify({'error': errors[0]}), 400
 
         role = data.get('role')
-        if role not in ('admin', 'collector'):
-            return jsonify({'error': 'Role must be admin or collector'}), 400
+        if role not in ('admin', 'delivery', 'collector'):
+            return jsonify({'error': 'Role must be admin, delivery or collector'}), 400
 
         username = sanitize_string(data.get('username'))
         if User.query.filter_by(username=username).first():
@@ -40,11 +41,22 @@ def create_user():
         if len(password) < 4:
             return jsonify({'error': 'Password must be at least 4 characters'}), 400
 
+        agency_id = data.get('agency_id')
+        if role == 'delivery':
+            if not agency_id:
+                return jsonify({'error': 'Agency is required for delivery users'}), 400
+            agency = Agency.query.get(agency_id)
+            if not agency or not agency.is_active:
+                return jsonify({'error': 'Agency not found'}), 404
+        else:
+            agency = None
+
         current = get_current_user()
         user = User(
             username=username,
             role=role,
             full_name=sanitize_string(data.get('full_name')),
+            agency_id=agency.id if agency else None,
             is_active=True,
             created_at=datetime.utcnow(),
             created_by=current.id
@@ -76,10 +88,32 @@ def update_user(user_id):
         if 'is_active' in data and not data['is_active'] and user.id == current.id:
             return jsonify({'error': 'Cannot deactivate your own account'}), 400
 
-        if 'role' in data:
-            if data['role'] not in ('admin', 'collector'):
-                return jsonify({'error': 'Role must be admin or collector'}), 400
-            user.role = data['role']
+        role = data.get('role', user.role)
+        if role not in ('admin', 'delivery', 'collector'):
+            return jsonify({'error': 'Role must be admin, delivery or collector'}), 400
+        user.role = role
+
+        if 'agency_id' in data:
+            if role == 'delivery':
+                if not data['agency_id']:
+                    return jsonify({'error': 'Agency is required for delivery users'}), 400
+                agency = Agency.query.get(data['agency_id'])
+                if not agency or not agency.is_active:
+                    return jsonify({'error': 'Agency not found'}), 404
+                user.agency_id = data['agency_id']
+            elif role == 'collector':
+                if data['agency_id']:
+                    agency = Agency.query.get(data['agency_id'])
+                    if not agency or not agency.is_active:
+                        return jsonify({'error': 'Agency not found'}), 404
+                    user.agency_id = data['agency_id']
+                else:
+                    user.agency_id = None
+            else:
+                user.agency_id = None
+        elif role == 'admin':
+            user.agency_id = None
+
         if 'full_name' in data:
             user.full_name = sanitize_string(data.get('full_name'))
         if 'is_active' in data:
